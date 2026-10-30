@@ -165,6 +165,24 @@ function parseError(status, text) {
   };
 }
 
+/** 找不到目標時，列出資料庫內實際存在的表 / collection，方便對照 ID */
+async function listAvailable(mode, ctx, headers) {
+  const url = mode === 'table'
+    ? `${ctx.endpoint}/tablesdb/${encodeURIComponent(ctx.databaseId)}/tables?limit=100`
+    : `${ctx.endpoint}/databases/${encodeURIComponent(ctx.databaseId)}/collections?limit=100`;
+
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const items = mode === 'table' ? json.tables : json.collections;
+    if (!Array.isArray(items)) return null;
+    return items.map((item) => (item.name && item.name !== item.$id ? `${item.$id}（${item.name}）` : item.$id));
+  } catch {
+    return null;
+  }
+}
+
 async function postWithRetry(url, headers, body) {
   let lastError;
 
@@ -251,6 +269,14 @@ async function main() {
       return;
     } catch (error) {
       lastError = error;
+
+      if (error instanceof ApiError && error.isNotFound) {
+        const available = await listAvailable(mode, ctx, headers);
+        if (available) {
+          console.warn(`[cron] ${mode} 模式在資料庫 ${ctx.databaseId} 看到的表：${available.length ? available.join('、') : '（空的，一個都沒有）'}`);
+        }
+      }
+
       const next = modes[i + 1];
       if (next && error instanceof ApiError && error.isNotFound) {
         console.warn(`[cron] ${mode} 模式找不到目標，改用 ${next} 模式重試`);
@@ -260,7 +286,12 @@ async function main() {
     }
   }
 
-  fail(lastError?.message || '未知錯誤');
+  const detail = lastError?.message || '未知錯誤';
+  fail(
+    `${detail}\n`
+    + `[cron] 請到 Appwrite Console 確認資料庫 ${ctx.databaseId} 內有一張 ID 為 ${ctx.tableId} 的表`
+    + `（string 欄位 name / datetime / remark），或把 APPWRITE_TABLE_ID 改成上列實際存在的 ID。`,
+  );
 }
 
 main().catch((error) => {
