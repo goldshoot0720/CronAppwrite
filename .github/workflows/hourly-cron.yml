@@ -14,6 +14,7 @@ on:
           - write
           - dry_run
           - setup
+          - discover
         default: write
       database_id:
         description: 資料庫 ID（留空＝用 secrets 的 APPWRITE_DATABASE_ID）
@@ -58,8 +59,12 @@ jobs:
         if: inputs.mode == 'setup'
         run: node scripts/setup-table.mjs
 
+      - name: 找出 cron 表在哪個資料庫
+        if: inputs.mode == 'discover'
+        run: node scripts/find-table.mjs
+
       - name: 新增一筆資料
-        if: inputs.mode != 'setup'
+        if: inputs.mode != 'setup' && inputs.mode != 'discover'
         env:
           # auto = 先試 TablesDB（tables/rows），找不到就退回舊版 collections/documents
           APPWRITE_MODE: auto
