@@ -1,0 +1,8 @@
+.env
+.env.local
+node_modules/
+.DS_Store
+*.log
+
+# 本機 AI 工作區資料，不進版控
+.workbuddy-ai/

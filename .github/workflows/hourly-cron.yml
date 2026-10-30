@@ -1,0 +1,47 @@
+name: cron-hourly-insert
+
+# 每小時整點在 Appwrite 的 cron 表新增一筆資料。
+# 注意：GitHub 的 cron 以 UTC 計算；資料時間由腳本依 CRON_TZ 換算，不會寫錯時區。
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只印出要寫入的內容，不呼叫 Appwrite
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# 避免上一輪還沒跑完又疊一輪
+concurrency:
+  group: cron-hourly-insert
+  cancel-in-progress: false
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 寫入 cron 資料
+        env:
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
+          APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
+          # 使用 TablesDB（tables / rows）；若專案是舊版 collections / documents 改成 collection
+          APPWRITE_MODE: table
+          CRON_TZ: Asia/Taipei
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: node scripts/insert-cron.mjs

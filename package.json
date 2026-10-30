@@ -1,0 +1,14 @@
+{
+  "name": "cron-appwrite",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "透過 GitHub Actions 每小時在 Appwrite 的 cron 表新增一筆資料",
+  "scripts": {
+    "insert": "node scripts/insert-cron.mjs",
+    "dry-run": "DRY_RUN=1 node scripts/insert-cron.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
