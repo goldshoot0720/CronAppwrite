@@ -19,6 +19,8 @@
  *   DRY_RUN              設為 1 時只印出內容、不呼叫 API
  */
 
+import { resolveConfig, request, ApiError, fail } from './lib/appwrite.mjs';
+
 const TZ = (process.env.CRON_TZ || 'Asia/Taipei').trim();
 const DRY_RUN = ['1', 'true', 'yes'].includes(String(process.env.DRY_RUN || '').toLowerCase());
 const MAX_ATTEMPTS = 3;
@@ -68,20 +70,7 @@ function buildRecord(now) {
   };
 }
 
-// ------------------------------------------------------------------ 設定解析
-
-function fail(message) {
-  console.error(`[cron] ✗ ${message}`);
-  process.exit(1);
-}
-
-function requiredEnv(name) {
-  const value = process.env[name];
-  if (!value || !value.trim()) {
-    fail(`缺少環境變數 ${name}（本機測試請參考 .env.example，GitHub 上請設定 Repository secrets）`);
-  }
-  return value.trim();
-}
+// ---------------------------------------------------------------- 請求組裝
 
 function normalizeMode(raw) {
   const value = String(raw || 'auto').trim().toLowerCase();
@@ -91,90 +80,31 @@ function normalizeMode(raw) {
   fail(`APPWRITE_MODE 無法辨識：${raw}（可用 auto / table / collection）`);
 }
 
-/** 允許只填 https://cloud.appwrite.io，自動補上 /v1 */
-function endpointBase(raw) {
-  let url;
-  try {
-    url = new URL(raw);
-  } catch {
-    fail(`APPWRITE_ENDPOINT 不是合法網址：${raw}`);
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    fail(`APPWRITE_ENDPOINT 必須是 http(s) 網址：${raw}`);
-  }
-  const path = url.pathname.replace(/\/+$/, '');
-  const basePath = /\/v\d+$/.test(path) ? path : `${path}/v1`;
-  return `${url.origin}${basePath}`;
-}
-
-function buildRequest(mode, { endpoint, databaseId, tableId }) {
+function buildRequest(mode, cfg) {
   if (mode === 'table') {
     return {
-      url: `${endpoint}/tablesdb/${encodeURIComponent(databaseId)}/tables/${encodeURIComponent(tableId)}/rows`,
+      url: `${cfg.endpoint}/tablesdb/${encodeURIComponent(cfg.databaseId)}/tables/${encodeURIComponent(cfg.tableId)}/rows`,
       // TablesDB：新增 row，rowId 交給 Appwrite 產生
       body: (data) => ({ rowId: 'unique()', data }),
-      target: `table ${databaseId}/${tableId}`,
+      target: `table ${cfg.databaseId}/${cfg.tableId}`,
     };
   }
   return {
-    url: `${endpoint}/databases/${encodeURIComponent(databaseId)}/collections/${encodeURIComponent(tableId)}/documents`,
+    url: `${cfg.endpoint}/databases/${encodeURIComponent(cfg.databaseId)}/collections/${encodeURIComponent(cfg.tableId)}/documents`,
     // 舊版 Databases：新增 document，documentId 交給 Appwrite 產生
     body: (data) => ({ documentId: 'unique()', data }),
-    target: `collection ${databaseId}/${tableId}`,
+    target: `collection ${cfg.databaseId}/${cfg.tableId}`,
   };
 }
 
-// -------------------------------------------------------------------- 寫入
-
-class ApiError extends Error {
-  constructor(message, { status, type } = {}) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.type = type;
-  }
-
-  /** 目標（資料庫 / 表 / collection）不存在，換另一種模式或提示使用者建立 */
-  get isNotFound() {
-    return this.status === 404 || String(this.type || '').endsWith('_not_found');
-  }
-}
-
-function parseError(status, text) {
-  let message = text;
-  let type;
-  try {
-    const json = JSON.parse(text);
-    if (json.message) message = json.message;
-    type = json.type;
-  } catch {
-    /* 保留原始文字 */
-  }
-
-  const hint = status === 401 || status === 403
-    ? '請確認 API Key 有效、專案 ID 正確，且 Key 具備 rows.write 權限'
-    : status === 404
-      ? '請確認資料庫 ID、表 ID 是否正確，以及該表是否已經建立'
-      : status === 400
-        ? '多半是欄位名稱或型別與表定義不符'
-        : '';
-
-  return {
-    type,
-    message: `Appwrite 回應 ${status} ${message}${type ? `（${type}）` : ''}${hint ? `：${hint}` : ''}`,
-  };
-}
-
-/** 找不到目標時，列出資料庫內實際存在的表 / collection，方便對照 ID */
-async function listAvailable(mode, ctx, headers) {
+/** 找不到目標時，列出資料庫內實際存在的表，方便對照 ID */
+async function listAvailable(mode, cfg) {
   const url = mode === 'table'
-    ? `${ctx.endpoint}/tablesdb/${encodeURIComponent(ctx.databaseId)}/tables?limit=100`
-    : `${ctx.endpoint}/databases/${encodeURIComponent(ctx.databaseId)}/collections?limit=100`;
+    ? `${cfg.endpoint}/tablesdb/${encodeURIComponent(cfg.databaseId)}/tables?limit=100`
+    : `${cfg.endpoint}/databases/${encodeURIComponent(cfg.databaseId)}/collections?limit=100`;
 
   try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return null;
-    const json = await res.json();
+    const { json } = await request('GET', url, { headers: cfg.headers, timeout: 15000 });
     const items = mode === 'table' ? json.tables : json.collections;
     if (!Array.isArray(items)) return null;
     return items.map((item) => (item.name && item.name !== item.$id ? `${item.$id}（${item.name}）` : item.$id));
@@ -188,31 +118,11 @@ async function postWithRetry(url, headers, body) {
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      });
-      const text = await res.text();
-
-      if (res.ok) {
-        let payload = {};
-        try {
-          payload = text ? JSON.parse(text) : {};
-        } catch {
-          /* 回應不是 JSON 也無妨，狀態碼成功即可 */
-        }
-        return { id: payload.$id || payload.id || '(unknown)', status: res.status };
-      }
-
-      const parsed = parseError(res.status, text);
-      const error = new ApiError(parsed.message, { status: res.status, type: parsed.type });
-      // 4xx 屬於設定或權限問題，重試沒意義
-      if (res.status < 500) throw error;
-      lastError = error;
+      const { status, json } = await request('POST', url, { headers, body });
+      return { id: json.$id || json.id || '(unknown)', status };
     } catch (error) {
-      if (error instanceof ApiError) throw error;
+      // 4xx 屬於設定或權限問題，重試沒意義
+      if (error instanceof ApiError && error.status < 500) throw error;
       lastError = error;
     }
 
@@ -241,39 +151,27 @@ async function main() {
     return;
   }
 
-  const ctx = {
-    endpoint: endpointBase(requiredEnv('APPWRITE_ENDPOINT')),
-    databaseId: requiredEnv('APPWRITE_DATABASE_ID'),
-    tableId: requiredEnv('APPWRITE_TABLE_ID'),
-  };
-  const projectId = requiredEnv('APPWRITE_PROJECT_ID');
-  const apiKey = requiredEnv('APPWRITE_API_KEY');
-
-  const headers = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    'X-Appwrite-Project': projectId,
-    'X-Appwrite-Key': apiKey,
-  };
-
+  const cfg = resolveConfig();
   const setting = normalizeMode(process.env.APPWRITE_MODE);
   const modes = setting === 'auto' ? ['table', 'collection'] : [setting];
 
   let lastError;
   for (let i = 0; i < modes.length; i += 1) {
     const mode = modes[i];
-    const request = buildRequest(mode, ctx);
+    const req = buildRequest(mode, cfg);
+
     try {
-      const result = await postWithRetry(request.url, headers, request.body(record));
-      console.log(`[cron] ✓ 已寫入 ${request.target}，id=${result.id}（HTTP ${result.status}）`);
+      const result = await postWithRetry(req.url, cfg.headers, req.body(record));
+      console.log(`[cron] ✓ 已寫入 ${req.target}，id=${result.id}（HTTP ${result.status}）`);
       return;
     } catch (error) {
       lastError = error;
 
       if (error instanceof ApiError && error.isNotFound) {
-        const available = await listAvailable(mode, ctx, headers);
+        const available = await listAvailable(mode, cfg);
         if (available) {
-          console.warn(`[cron] ${mode} 模式在資料庫 ${ctx.databaseId} 看到的表：${available.length ? available.join('、') : '（空的，一個都沒有）'}`);
+          const list = available.length ? available.join('、') : '（空的，一個都沒有）';
+          console.warn(`[cron] ${mode} 模式在資料庫 ${cfg.databaseId} 看到的表：${list}`);
         }
       }
 
@@ -286,11 +184,11 @@ async function main() {
     }
   }
 
-  const detail = lastError?.message || '未知錯誤';
   fail(
-    `${detail}\n`
-    + `[cron] 請到 Appwrite Console 確認資料庫 ${ctx.databaseId} 內有一張 ID 為 ${ctx.tableId} 的表`
-    + `（string 欄位 name / datetime / remark），或把 APPWRITE_TABLE_ID 改成上列實際存在的 ID。`,
+    `${lastError?.message || '未知錯誤'}\n`
+    + `[cron] 請到 Appwrite Console 確認資料庫 ${cfg.databaseId} 內有一張 ID 為 ${cfg.tableId} 的表`
+    + `（string 欄位 name / datetime / remark），或把 APPWRITE_TABLE_ID 改成上列實際存在的 ID。\n`
+    + '[cron] 也可以執行「Run workflow → mode = setup」讓程式自動建立這張表。',
   );
 }
 

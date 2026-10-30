@@ -8,11 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 執行模式（write = 實際寫入，dry_run = 只印出不寫入）
+        description: 執行模式
         type: choice
         options:
           - write
           - dry_run
+          - setup
         default: write
 
 permissions:
@@ -36,7 +37,18 @@ jobs:
         with:
           node-version: '22'
 
-      - name: 寫入 cron 資料
+      - name: 建立 cron 表與欄位
+        if: inputs.mode == 'setup'
+        env:
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
+          APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
+        run: node scripts/setup-table.mjs
+
+      - name: 新增一筆資料
+        if: inputs.mode != 'setup'
         env:
           APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}

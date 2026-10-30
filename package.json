@@ -6,7 +6,8 @@
   "description": "透過 GitHub Actions 每小時在 Appwrite 的 cron 表新增一筆資料",
   "scripts": {
     "insert": "node scripts/insert-cron.mjs",
-    "dry-run": "DRY_RUN=1 node scripts/insert-cron.mjs"
+    "dry-run": "DRY_RUN=1 node scripts/insert-cron.mjs",
+    "setup": "node scripts/setup-table.mjs"
   },
   "engines": {
     "node": ">=20"
