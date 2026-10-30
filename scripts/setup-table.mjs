@@ -4,27 +4,24 @@
  *
  * 做三件事：
  *   1. 表不存在就建立（TablesDB）
- *   2. 補上 name / datetime / remark 三個 string 欄位
+ *   2. 補上缺少的 name / datetime / remark 欄位（已存在等價欄位如 dateTime / note 就不重複建）
  *   3. 輪詢到表與欄位都變成 available
  *
  * 環境變數與 insert-cron.mjs 相同，另外需要 tables.write 權限。
  */
 
-import { resolveConfig, request, ApiError, fail } from './lib/appwrite.mjs';
+import {
+  resolveConfig, request, tableUrl, pickColumn, ApiError, fail,
+} from './lib/appwrite.mjs';
 
 const COLUMNS = [
-  { key: 'name', size: 128 },
-  { key: 'datetime', size: 32 },
-  { key: 'remark', size: 255 },
+  { logical: 'name', key: 'name', size: 128 },
+  { logical: 'datetime', key: 'datetime', size: 32 },
+  { logical: 'remark', key: 'remark', size: 255 },
 ];
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLLS = 30;
-
-function tableUrl(cfg, suffix = '') {
-  const base = `${cfg.endpoint}/tablesdb/${encodeURIComponent(cfg.databaseId)}/tables/${encodeURIComponent(cfg.tableId)}`;
-  return `${base}${suffix}`;
-}
 
 async function ensureTable(cfg) {
   try {
@@ -48,8 +45,25 @@ async function ensureTable(cfg) {
   console.log(`[cron] ✓ 已建立表 ${cfg.tableId}`);
 }
 
+async function readColumns(cfg) {
+  try {
+    const { json } = await request('GET', tableUrl(cfg), { headers: cfg.headers });
+    return Array.isArray(json.columns) ? json.columns : [];
+  } catch {
+    return [];
+  }
+}
+
 async function ensureColumns(cfg) {
+  const existing = await readColumns(cfg);
+
   for (const column of COLUMNS) {
+    const already = pickColumn(existing, column.logical);
+    if (already) {
+      console.log(`[cron] 已有等價欄位 ${already.key}（${already.type}）對應 ${column.logical}，跳過建立`);
+      continue;
+    }
+
     try {
       await request('POST', tableUrl(cfg, '/columns/string'), {
         headers: cfg.headers,
@@ -71,7 +85,9 @@ async function waitUntilReady(cfg) {
     const { json } = await request('GET', tableUrl(cfg), { headers: cfg.headers });
     const status = json.status || 'available';
     const columns = Array.isArray(json.columns) ? json.columns : [];
-    const pending = columns.filter((c) => c.status && c.status !== 'available').map((c) => c.key);
+    const pending = columns
+      .filter((column) => column.status && column.status !== 'available')
+      .map((column) => column.key);
 
     if (status === 'available' && pending.length === 0) {
       console.log('[cron] ✓ 表與欄位都已就緒，可以開始寫入');

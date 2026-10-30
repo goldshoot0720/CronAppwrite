@@ -116,3 +116,40 @@ export async function request(method, url, { headers, body, timeout = DEFAULT_TI
 
   return { status: res.status, json: json ?? {} };
 }
+
+// ------------------------------------------------------------ 欄位對應
+
+/**
+ * 同一個語意欄位，在不同表可能叫不同名字（例如 dateTime / datetime、note / remark）。
+ * 對應時優先挑 string 型別，才能保留「2026-10-30 11:42」這種原樣格式。
+ */
+export const FIELD_CANDIDATES = {
+  name: ['name'],
+  datetime: ['datetime', 'dateTime', 'date_time', 'date'],
+  remark: ['remark', 'note', 'remarks', 'memo'],
+};
+
+export function pickColumn(columns, logical) {
+  if (!Array.isArray(columns)) return null;
+  const candidates = FIELD_CANDIDATES[logical] || [logical];
+  const found = candidates
+    .map((key) => columns.find((column) => column.key === key))
+    .filter(Boolean);
+  if (!found.length) return null;
+  return found.find((column) => column.type === 'string') || found[0];
+}
+
+export function tableUrl(cfg, suffix = '') {
+  return `${cfg.endpoint}/tablesdb/${encodeURIComponent(cfg.databaseId)}`
+    + `/tables/${encodeURIComponent(cfg.tableId)}${suffix}`;
+}
+
+/** 取得表的欄位定義；讀不到就回 null，讓呼叫端退回預設欄位名 */
+export async function loadColumns(cfg) {
+  try {
+    const { json } = await request('GET', tableUrl(cfg), { headers: cfg.headers });
+    return Array.isArray(json.columns) ? json.columns : null;
+  } catch {
+    return null;
+  }
+}
