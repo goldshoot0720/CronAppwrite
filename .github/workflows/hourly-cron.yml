@@ -15,6 +15,14 @@ on:
           - dry_run
           - setup
         default: write
+      database_id:
+        description: 資料庫 ID（留空＝用 secrets 的 APPWRITE_DATABASE_ID）
+        type: string
+        required: false
+      table_id:
+        description: 表 ID（留空＝用 secrets 的 APPWRITE_TABLE_ID）
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -28,6 +36,15 @@ jobs:
   insert:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+      APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+      APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
+      APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
+      # 手動觸發時可臨時指定，優先於上面的 secrets
+      APPWRITE_DATABASE_ID_OVERRIDE: ${{ inputs.database_id }}
+      APPWRITE_TABLE_ID_OVERRIDE: ${{ inputs.table_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -37,24 +54,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: 建立 cron 表與欄位
+      - name: 建立 / 補齊表與欄位
         if: inputs.mode == 'setup'
-        env:
-          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
-          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
-          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
-          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
-          APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
         run: node scripts/setup-table.mjs
 
       - name: 新增一筆資料
         if: inputs.mode != 'setup'
         env:
-          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
-          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
-          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
-          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
-          APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
           # auto = 先試 TablesDB（tables/rows），找不到就退回舊版 collections/documents
           APPWRITE_MODE: auto
           CRON_TZ: Asia/Taipei

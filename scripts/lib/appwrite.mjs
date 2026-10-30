@@ -77,12 +77,15 @@ export function resolveConfig() {
   const projectId = requiredEnv('APPWRITE_PROJECT_ID');
   const apiKey = requiredEnv('APPWRITE_API_KEY');
 
+  // 允許用 OVERRIDE 覆寫，方便從 workflow 介面臨時指定（不必改 secrets）
+  const override = (name, fallback) => (process.env[name] || '').trim() || requiredEnv(fallback);
+
   return {
     endpoint: endpointBase(requiredEnv('APPWRITE_ENDPOINT')),
     projectId,
     apiKey,
-    databaseId: requiredEnv('APPWRITE_DATABASE_ID'),
-    tableId: requiredEnv('APPWRITE_TABLE_ID'),
+    databaseId: override('APPWRITE_DATABASE_ID_OVERRIDE', 'APPWRITE_DATABASE_ID'),
+    tableId: override('APPWRITE_TABLE_ID_OVERRIDE', 'APPWRITE_TABLE_ID'),
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
