@@ -22,6 +22,7 @@
 ├── .github/workflows/hourly-cron.yml   # 每小時執行的排程
 ├── scripts/insert-cron.mjs             # 產生資料並呼叫 Appwrite API（零依賴）
 ├── scripts/setup-table.mjs             # 一鍵建立 cron 表與欄位（可重複執行）
+├── scripts/find-table.mjs              # 掃描全專案找出 cron 表在哪
 ├── scripts/lib/appwrite.mjs            # 共用的設定解析與 HTTP 錯誤處理
 ├── .env.example                        # 本機測試用的環境變數範本
 └── package.json
@@ -74,13 +75,28 @@ Console → **Overview → Integrate with your server → API keys → Create AP
 
 **自動**：`0 * * * *`，每小時整點（UTC）觸發，推送後即生效。
 
-**手動**：Actions → `cron-hourly-insert` → **Run workflow**，mode 三選一：
+**手動**：Actions → `cron-hourly-insert` → **Run workflow**，mode 四選一：
 
 | mode | 行為 |
 | --- | --- |
 | `write`（預設） | 實際寫入一筆資料到 Appwrite |
 | `dry_run` | 只印出這次會寫入的內容，不呼叫 API |
 | `setup` | 建立 / 補齊 `cron` 表與三個欄位，不寫入資料 |
+| `discover` | 掃描專案內所有資料庫，列出 ID 含 `cron` 的表及其資料庫 ID |
+
+手動觸發時還可以填 `database_id` / `table_id` 臨時覆寫，優先於 secrets，方便直接貼 Console 上看到的 ID 來測試。
+
+## 欄位名稱自動對應
+
+腳本會先讀表的實際結構，再把三個語意欄位對應到真正存在的欄位，所以表用 `dateTime` / `note` 命名也寫得進去：
+
+| 語意 | 認得的欄位名 |
+| --- | --- |
+| 名稱 | `name` |
+| 日期時間 | `datetime`、`dateTime`、`date_time`、`date` |
+| 備註 | `remark`、`note`、`remarks`、`memo` |
+
+對應到的欄位如果是 **string**，寫入 `2026-10-30 11:42` 原樣字串；如果是 **datetime** 型別，改送 ISO 8601（Appwrite 會存成 UTC，Console 依你的時區顯示）。若表上還有其他必填欄位（例如 `createdAt`），腳本會自動補值後重試一次。
 
 ## 本機測試
 
