@@ -43,8 +43,8 @@ jobs:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
           APPWRITE_TABLE_ID: ${{ secrets.APPWRITE_TABLE_ID }}
-          # 使用 TablesDB（tables / rows）；若專案是舊版 collections / documents 改成 collection
-          APPWRITE_MODE: table
+          # auto = 先試 TablesDB（tables/rows），找不到就退回舊版 collections/documents
+          APPWRITE_MODE: auto
           CRON_TZ: Asia/Taipei
           # 排程觸發時 inputs.mode 為空 → 視為 write
           DRY_RUN: ${{ inputs.mode == 'dry_run' && '1' || '0' }}

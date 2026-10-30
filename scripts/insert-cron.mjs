@@ -13,7 +13,8 @@
  *   APPWRITE_API_KEY     具備 rows.write（舊版為 documents.write）權限的 API Key
  *   APPWRITE_DATABASE_ID 資料庫 ID
  *   APPWRITE_TABLE_ID    表 ID（舊版為 collection ID）
- *   APPWRITE_MODE        table（預設，TablesDB 的 tables/rows）| collection（舊版 collections/documents）
+ *   APPWRITE_MODE        auto（預設）| table | collection
+ *                        auto = 先試 TablesDB 的 tables/rows，找不到就退回舊版 collections/documents
  *   CRON_TZ              時區，預設 Asia/Taipei
  *   DRY_RUN              設為 1 時只印出內容、不呼叫 API
  */
@@ -83,10 +84,11 @@ function requiredEnv(name) {
 }
 
 function normalizeMode(raw) {
-  const value = String(raw || 'table').trim().toLowerCase();
+  const value = String(raw || 'auto').trim().toLowerCase();
+  if (['auto', ''].includes(value)) return 'auto';
   if (['table', 'tables', 'row', 'rows', 'tablesdb'].includes(value)) return 'table';
   if (['collection', 'collections', 'document', 'documents'].includes(value)) return 'collection';
-  fail(`APPWRITE_MODE 無法辨識：${raw}（可用 table 或 collection）`);
+  fail(`APPWRITE_MODE 無法辨識：${raw}（可用 auto / table / collection）`);
 }
 
 /** 允許只填 https://cloud.appwrite.io，自動補上 /v1 */
@@ -105,8 +107,7 @@ function endpointBase(raw) {
   return `${url.origin}${basePath}`;
 }
 
-function buildRequest({ endpoint, databaseId, tableId }) {
-  const mode = normalizeMode(process.env.APPWRITE_MODE);
+function buildRequest(mode, { endpoint, databaseId, tableId }) {
   if (mode === 'table') {
     return {
       url: `${endpoint}/tablesdb/${encodeURIComponent(databaseId)}/tables/${encodeURIComponent(tableId)}/rows`,
@@ -125,7 +126,46 @@ function buildRequest({ endpoint, databaseId, tableId }) {
 
 // -------------------------------------------------------------------- 寫入
 
-async function createRecord({ url, body, headers }) {
+class ApiError extends Error {
+  constructor(message, { status, type } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.type = type;
+  }
+
+  /** 目標（資料庫 / 表 / collection）不存在，換另一種模式或提示使用者建立 */
+  get isNotFound() {
+    return this.status === 404 || String(this.type || '').endsWith('_not_found');
+  }
+}
+
+function parseError(status, text) {
+  let message = text;
+  let type;
+  try {
+    const json = JSON.parse(text);
+    if (json.message) message = json.message;
+    type = json.type;
+  } catch {
+    /* 保留原始文字 */
+  }
+
+  const hint = status === 401 || status === 403
+    ? '請確認 API Key 有效、專案 ID 正確，且 Key 具備 rows.write 權限'
+    : status === 404
+      ? '請確認資料庫 ID、表 ID 是否正確，以及該表是否已經建立'
+      : status === 400
+        ? '多半是欄位名稱或型別與表定義不符'
+        : '';
+
+  return {
+    type,
+    message: `Appwrite 回應 ${status} ${message}${type ? `（${type}）` : ''}${hint ? `：${hint}` : ''}`,
+  };
+}
+
+async function postWithRetry(url, headers, body) {
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -148,12 +188,13 @@ async function createRecord({ url, body, headers }) {
         return { id: payload.$id || payload.id || '(unknown)', status: res.status };
       }
 
-      const detail = describeError(res.status, text);
+      const parsed = parseError(res.status, text);
+      const error = new ApiError(parsed.message, { status: res.status, type: parsed.type });
       // 4xx 屬於設定或權限問題，重試沒意義
-      if (res.status < 500) fail(detail);
-      lastError = new Error(detail);
+      if (res.status < 500) throw error;
+      lastError = error;
     } catch (error) {
-      if (error?.message?.startsWith('[cron]')) throw error;
+      if (error instanceof ApiError) throw error;
       lastError = error;
     }
 
@@ -164,25 +205,7 @@ async function createRecord({ url, body, headers }) {
     }
   }
 
-  fail(`重試 ${MAX_ATTEMPTS} 次仍失敗：${lastError?.message || '未知錯誤'}`);
-}
-
-function describeError(status, text) {
-  let message = text;
-  try {
-    const json = JSON.parse(text);
-    if (json.message) message = `${json.message}${json.type ? `（${json.type}）` : ''}`;
-  } catch {
-    /* 保留原始文字 */
-  }
-  const hint = status === 401 || status === 403
-    ? '：請確認 API Key 有效、專案 ID 正確，且 Key 具備 rows.write 權限'
-    : status === 404
-      ? '：請確認資料庫 ID、表 ID 是否正確，以及 Appwrite 版本是否支援 TablesDB'
-      : status === 400
-        ? '：多半是欄位名稱或型別與表定義不符'
-        : '';
-  return `Appwrite 回應 ${status} ${message}${hint}`;
+  throw lastError;
 }
 
 // -------------------------------------------------------------------- 主流程
@@ -200,13 +223,14 @@ async function main() {
     return;
   }
 
-  const endpoint = endpointBase(requiredEnv('APPWRITE_ENDPOINT'));
+  const ctx = {
+    endpoint: endpointBase(requiredEnv('APPWRITE_ENDPOINT')),
+    databaseId: requiredEnv('APPWRITE_DATABASE_ID'),
+    tableId: requiredEnv('APPWRITE_TABLE_ID'),
+  };
   const projectId = requiredEnv('APPWRITE_PROJECT_ID');
   const apiKey = requiredEnv('APPWRITE_API_KEY');
-  const databaseId = requiredEnv('APPWRITE_DATABASE_ID');
-  const tableId = requiredEnv('APPWRITE_TABLE_ID');
 
-  const request = buildRequest({ endpoint, databaseId, tableId });
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -214,13 +238,29 @@ async function main() {
     'X-Appwrite-Key': apiKey,
   };
 
-  const result = await createRecord({
-    url: request.url,
-    headers,
-    body: request.body(record),
-  });
+  const setting = normalizeMode(process.env.APPWRITE_MODE);
+  const modes = setting === 'auto' ? ['table', 'collection'] : [setting];
 
-  console.log(`[cron] ✓ 已寫入 ${request.target}，id=${result.id}（HTTP ${result.status}）`);
+  let lastError;
+  for (let i = 0; i < modes.length; i += 1) {
+    const mode = modes[i];
+    const request = buildRequest(mode, ctx);
+    try {
+      const result = await postWithRetry(request.url, headers, request.body(record));
+      console.log(`[cron] ✓ 已寫入 ${request.target}，id=${result.id}（HTTP ${result.status}）`);
+      return;
+    } catch (error) {
+      lastError = error;
+      const next = modes[i + 1];
+      if (next && error instanceof ApiError && error.isNotFound) {
+        console.warn(`[cron] ${mode} 模式找不到目標，改用 ${next} 模式重試`);
+        continue;
+      }
+      break;
+    }
+  }
+
+  fail(lastError?.message || '未知錯誤');
 }
 
 main().catch((error) => {
