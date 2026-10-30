@@ -21,13 +21,17 @@
 .
 ├── .github/workflows/hourly-cron.yml   # 每小時執行的排程
 ├── scripts/insert-cron.mjs             # 產生資料並呼叫 Appwrite API（零依賴）
+├── scripts/setup-table.mjs             # 一鍵建立 cron 表與欄位（可重複執行）
+├── scripts/lib/appwrite.mjs            # 共用的設定解析與 HTTP 錯誤處理
 ├── .env.example                        # 本機測試用的環境變數範本
 └── package.json
 ```
 
 ## 一、在 Appwrite 建立表
 
-到 Appwrite Console → **Databases** → 選擇（或建立）資料庫 → **Create table**：
+最快的方式是讓程式自己建：設定好下面第二、三步的 API Key 與 Secrets 後，到 Actions → **Run workflow** → mode 選 **setup** 執行一次即可。腳本會建立 `cron` 表、三個欄位，並等到狀態變成 available，重複執行也不會出錯。
+
+想手動建也可以，到 Console → **Databases** → 選擇資料庫 → **Create table**：
 
 1. Table ID 填 `cron`（名稱可叫 `cron`）。
 2. 新增三個 **String** 欄位，都設為 **Required**：
@@ -48,6 +52,7 @@
 Console → **Overview → Integrate with your server → API keys → Create API key**，勾選：
 
 - `rows.read`、`rows.write`（舊版為 `documents.read`、`documents.write`）
+- 想用 **setup** 模式自動建表，還要加 `tables.read`、`tables.write`
 
 複製產生的 Key（只會顯示一次）。
 
@@ -63,10 +68,19 @@ Console → **Overview → Integrate with your server → API keys → Create AP
 | `APPWRITE_DATABASE_ID` | 資料庫 ID |
 | `APPWRITE_TABLE_ID` | `cron` |
 
+> `APPWRITE_DATABASE_ID` 與 `APPWRITE_TABLE_ID` 不是機密，改成 **Variables** 可以讓 Actions 日誌不要把它們遮成 `***`，除錯時比較好讀。
+
 ## 四、執行
 
-- **自動**：`0 * * * *`，每小時整點（UTC）觸發，推送後即生效。
-- **手動測試**：Actions → `cron-hourly-insert` → **Run workflow**，可勾 `dry_run` 先確認產生的內容再看實際寫入。
+**自動**：`0 * * * *`，每小時整點（UTC）觸發，推送後即生效。
+
+**手動**：Actions → `cron-hourly-insert` → **Run workflow**，mode 三選一：
+
+| mode | 行為 |
+| --- | --- |
+| `write`（預設） | 實際寫入一筆資料到 Appwrite |
+| `dry_run` | 只印出這次會寫入的內容，不呼叫 API |
+| `setup` | 建立 / 補齊 `cron` 表與三個欄位，不寫入資料 |
 
 ## 本機測試
 
@@ -76,6 +90,7 @@ set -a && source .env && set +a
 
 DRY_RUN=1 node scripts/insert-cron.mjs   # 只印出內容
 node scripts/insert-cron.mjs             # 真的寫入一筆
+node scripts/setup-table.mjs             # 建立 / 補齊表與欄位
 ```
 
 輸出範例：
@@ -98,7 +113,8 @@ node scripts/insert-cron.mjs             # 真的寫入一筆
 
 | 訊息 | 原因 |
 | --- | --- |
-| `401 / 403` | API Key 無效、專案 ID 錯，或 Key 沒有 `rows.write` 權限 |
-| `404` | 資料庫 ID / 表 ID 錯誤，或 Appwrite 版本不支援 `/tablesdb`（改用 `APPWRITE_MODE=collection`） |
+| `401 / 403` | API Key 無效、專案 ID 錯，或 Key 沒有 `rows.write`（setup 模式另需 `tables.write`）權限 |
+| `404 ... table_not_found` | 該資料庫沒有這張表。日誌會列出資料庫內實際存在的表 ID 供對照，或直接跑 `mode = setup` 自動建立 |
+| `404 ... collection_not_found` | 同上，但發生在 `auto` 模式的第二段（舊版 collections） |
 | `400 ... Invalid document structure` | 欄位 key 拼錯、型別不是 string，或欄位還在 processing |
 | `缺少環境變數 ...` | 本機沒 source `.env`，或 GitHub Secrets 名稱打錯 |
