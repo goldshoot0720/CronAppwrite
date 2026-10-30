@@ -198,6 +198,17 @@ function fillMissingRequired(message, columns, record) {
 
 // -------------------------------------------------------------------- 寫入
 
+/** 寫入後回讀一次，確認存進去的內容跟預期一致（失敗不影響寫入結果） */
+async function readBack(rowUrl, headers, id, mapping) {
+  try {
+    const { json } = await request('GET', `${rowUrl}/${encodeURIComponent(id)}`, { headers, timeout: 15000 });
+    const parts = Object.entries(mapping).map(([logical, key]) => `${key}=${json[key] ?? '（空）'}`);
+    console.log(`[cron] 回讀確認：${parts.join('、')}`);
+  } catch (error) {
+    console.warn(`[cron] 回讀失敗（不影響寫入）：${error.message}`);
+  }
+}
+
 async function postWithRetry(url, headers, payload, columns, record) {
   let lastError;
   let body = payload;
@@ -277,6 +288,7 @@ async function main() {
 
       const result = await postWithRetry(req.url, cfg.headers, req.body(data), columns, record);
       console.log(`[cron] ✓ 已寫入 ${req.target}，id=${result.id}（HTTP ${result.status}）`);
+      await readBack(req.url, cfg.headers, result.id, mapping);
       return;
     } catch (error) {
       lastError = error;
