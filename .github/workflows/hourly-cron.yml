@@ -7,10 +7,13 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 只印出要寫入的內容，不呼叫 Appwrite
-        type: boolean
-        default: false
+      mode:
+        description: 執行模式（write = 實際寫入，dry_run = 只印出不寫入）
+        type: choice
+        options:
+          - write
+          - dry_run
+        default: write
 
 permissions:
   contents: read
@@ -43,5 +46,6 @@ jobs:
           # 使用 TablesDB（tables / rows）；若專案是舊版 collections / documents 改成 collection
           APPWRITE_MODE: table
           CRON_TZ: Asia/Taipei
-          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          # 排程觸發時 inputs.mode 為空 → 視為 write
+          DRY_RUN: ${{ inputs.mode == 'dry_run' && '1' || '0' }}
         run: node scripts/insert-cron.mjs
